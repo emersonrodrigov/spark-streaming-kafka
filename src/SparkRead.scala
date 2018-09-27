@@ -1,71 +1,119 @@
 
-import consumer.kafka.{ ProcessedOffsetManager, ReceiverLauncher }
+
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.streaming.{ Seconds, StreamingContext }
 import org.apache.spark.{ SparkConf, SparkContext };
+import org.apache.kafka.common.serialization.StringDeserializer
+import org.apache.spark._
+import org.apache.spark.streaming._
+import org.apache.spark.streaming.kafka010._
+import org.apache.spark.streaming.kafka010.LocationStrategies.PreferConsistent
+import org.apache.spark.streaming.kafka010.ConsumerStrategies.Subscribe
+import org.apache.spark.sql.functions.from_json
+import org.apache.spark.sql.functions.{ get_json_object, json_tuple }
+import org.apache.spark.sql.SQLContext
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.StringType
+import org.apache.spark.sql.functions.count
+import br.com.experian.ingestion.score.config.KafkaConfig
+import br.com.experian.ingestion.score.config.SparkConfig
+
+
+
 
 object SparkRead {
+  
 
   def main(args: Array[String]): Unit = {
 
+    
+    KafkaConfig.configuration();
+    
+    // CONFIG SPARK LOCAL
+    System.setProperty("hadoop.home.dir", "C://winutils")
+
     // LOGS
     import org.apache.log4j.{ Level, Logger }
+    // This import is needed to use the $-notation
+    
     Logger.getLogger("org").setLevel(Level.OFF)
     Logger.getLogger("akka").setLevel(Level.OFF)
+ 
+    val spark = SparkConfig.openSession(); 
+      
+      
+      SparkSession
+      .builder()
+      .appName("LowLevelKafkaConsumer").master("local[*]")
+      .getOrCreate()
 
     //Create SparkContext
-    val conf = new SparkConf()
-      .setMaster("spark://localhost:7077")
-      .setAppName("LowLevelKafkaConsumer")
-      .set("spark.executor.memory", "1g")
-      .set("spark.rdd.compress", "true")
-      .set("spark.storage.memoryFraction", "1")
-      .set("spark.streaming.unpersist", "true")
+    //    val conf = new SparkConf()
+    //      .setMaster("local[*]")
+    //      .setAppName("LowLevelKafkaConsumer")
 
-    val sc = new SparkContext(conf)
-    val ssc = new StreamingContext(sc, Seconds(10))
+    //    val sc = new SparkContext(conf)
+    val ssc = new StreamingContext(spark.sparkContext, Seconds(1))
 
-    //INFO KAFKA
-    val topic = "sql-insert"
-    val zkhosts = "localhost"
-    val zkports = "2181"
+    //val sqlContext = new SQLContext(sc)
 
-    //Specify number of Receivers you need.
-    val numberOfReceivers = 1
+    // config kafka
+    val kafkaParams = Map[String, Object](
+      "bootstrap.servers" -> "localhost:9092", // servidor kakfa local
+      "key.deserializer" -> classOf[StringDeserializer],
+      "value.deserializer" -> classOf[StringDeserializer],
+      "group.id" -> "spark-read",
+      "auto.offset.reset" -> "latest",
+      "enable.auto.commit" -> (false: java.lang.Boolean))
 
-    val kafkaProperties: Map[String, String] =
-      Map(
-        "zookeeper.hosts" -> zkhosts,
-        "zookeeper.port" -> zkports,
-        "kafka.topic" -> topic,
-        "zookeeper.consumer.connection" -> "localhost:2181",
-        "kafka.consumer.id" -> "kafka-consumer",
-        //optional properties
-        "consumer.forcefromstart" -> "true",
-        "consumer.backpressure.enabled" -> "true",
-        "consumer.fetchsizebytes" -> "1048576",
-        "consumer.fillfreqms" -> "1000",
-        "consumer.num_fetch_to_buffer" -> "1")
+    //    var streamingInputDF =
+    //      spark.readStream
+    //        .format("kafka")
+    //        .option("kafka.bootstrap.servers", "<server:ip")
+    //        .option("subscribe", "topic1")
+    //        .option("startingOffsets", "latest")
+    //        .option("minPartitions", "10")
+    //        .option("failOnDataLoss", "true")
+    //        .load()
 
+    val inputStream = KafkaUtils.createDirectStream(ssc, PreferConsistent, Subscribe[String, String](Array("sql-insert"),  KafkaConfig.configuration()))
+    import spark.implicits._
+    inputStream.foreachRDD { (rdd, time) =>
+      val data = rdd.map(record => record.value)
+
+      if (data.collect().size > 0) {
+        //spark.read.schema(schema).json(data)
+
+               val df = spark.read.json(data)
+         
+               val teste = df.select("AUD_ENTTYP").first().getString(0)
+               
+               if(teste.trim() == "" || teste == null){
+                 
+                 
+                 
+               }
+               
+               
+               
+//               println(teste.getClass.getName)
+               println(teste)
+               
+       
+       
+      }
+
+      //      json.show
+    }
+
+    
+    ssc.start()
+    ssc.awaitTermination()
   }
 
-  val props = new java.util.Properties()
-  kafkaProperties foreach { case (key, value) => props.put(key, value) }
-
-  val tmp_stream = ReceiverLauncher.launch(ssc, props, numberOfReceivers, StorageLevel.MEMORY_ONLY)
-
-  //Get the Max offset from each RDD Partitions. Each RDD Partition belongs to One Kafka Partition
-  val partitonOffset_stream = ProcessedOffsetManager.getPartitionOffset(tmp_stream, props)
-
-  //Start Application Logic
-  tmp_stream.foreachRDD(rdd => {
-    println("\n\nNumber of records in this batch : " + rdd.count())
-  })
-  //End Application Logic
-
-  //Persists the Max Offset of given Kafka Partition to ZK
-  ProcessedOffsetManager.persists(partitonOffset_stream, props)
-  ssc.start()
-  ssc.awaitTermination()
-
 }
+
+
+
+
